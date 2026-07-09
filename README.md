@@ -323,7 +323,7 @@ meson test -C build-asan
 
 ## License
 
-Public domain. Use as you wish.
+ISC. See [LICENSE](LICENSE).
 
 ## References
 
