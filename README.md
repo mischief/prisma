@@ -10,8 +10,8 @@ presses and repeating timers.
 
 - hidraw backend (via hidapi) -- no background threads, no libusb, works
   unprivileged with the included udev rule
-- Config is a real Lua 5.4 script (`prisma.lua`), not an INI file --
-  images, colors, and button handlers are just function calls
+- Config is a real Lua 5.4 script (`prisma.lua`) -- images, colors, and
+  button handlers are just function calls
 - Image pipeline (nanosvg + libpng + libjpeg) normalizes any `.svg`,
   `.png`, or `.jpg`/`.jpeg` input to the device's 72x72 rotated JPEG
   format
@@ -154,9 +154,8 @@ Everything device-related lives under the `prisma` table:
 | `prisma.on_press(key, fn)` | register a handler to run when a key is pressed |
 | `prisma.every(seconds, fn)` | register a repeating timer (seconds may be fractional) |
 
-Plain Lua locals and tables take the place of what would otherwise be an
-INI `[vars]` macro section -- there's no separate templating language,
-it's just Lua.
+There's no separate templating/macro language -- variables, loops, and
+functions are just Lua.
 
 ### Example: tinting symbolic icon sets
 
