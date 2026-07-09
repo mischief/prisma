@@ -1,0 +1,18 @@
+[Unit]
+Description=Prisma - Elgato Stream Deck Controller
+Documentation=man:prisma(1)
+After=udev.service
+
+[Service]
+Type=simple
+ExecStart=@bindir@/prisma
+Restart=on-failure
+RestartSec=5
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=prisma
+
+[Install]
+WantedBy=default.target
