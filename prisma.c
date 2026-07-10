@@ -37,6 +37,11 @@ typedef struct {
 } ImageUpload;
 
 typedef struct {
+	unsigned char *data;
+	size_t size;
+} KeyCache;
+
+typedef struct {
 	double interval;   /* seconds between fires */
 	double next_fire;  /* CLOCK_MONOTONIC seconds */
 	int func_ref;       /* LUA_REGISTRYINDEX ref to the callback */
@@ -52,6 +57,63 @@ static int num_uploads = 0;
 
 static hid_device *dev = NULL;
 static lua_State *L = NULL;
+
+/* Last raw image bytes successfully sent to each key, so a periodic
+ * full-board repaint can just replay them instead of re-running
+ * conversion (or, for dynamically-fetched content like MPRIS art,
+ * re-fetching something that may no longer exist). Keeps the display
+ * self-healing if the Stream Deck itself ever drops a frame or resets
+ * its buffer -- a USB suspend/resume or hub power event, say -- while
+ * prisma keeps running and logging normally, with no write error to
+ * even notice by. Guards against exactly the "still running, display
+ * blanked" case that has no other signal. */
+static KeyCache key_cache[BUTTON_COUNT];
+#define FULL_REPAINT_INTERVAL_SEC 300.0
+static double next_full_repaint = 0;
+
+static int send_image_chunks(hid_device *d, int key, const unsigned char *image_data, int total_size);
+
+static void
+cache_key_image(int key, const unsigned char *data, size_t size)
+{
+	unsigned char *copy;
+
+	if (key < 0 || key >= BUTTON_COUNT || !data || size == 0)
+		return;
+
+	copy = malloc(size);
+	if (!copy) {
+		fprintf(stderr, "warning: malloc failed caching key %d for repaint\n", key + 1);
+		return;
+	}
+	memcpy(copy, data, size);
+
+	free(key_cache[key].data);
+	key_cache[key].data = copy;
+	key_cache[key].size = size;
+}
+
+/*
+ * Re-sends whatever was last successfully painted on every key. Called
+ * from the main loop on a timer, independent of Lua's prisma.every() --
+ * runs even if the config script never registered any timers of its
+ * own.
+ */
+static void
+repaint_all_keys(void)
+{
+	int key;
+
+	for (key = 0; key < BUTTON_COUNT; key++) {
+		if (!key_cache[key].data)
+			continue;
+		if (debug)
+			fprintf(stderr, "periodic repaint: key %d (%zu bytes)\n",
+			        key + 1, key_cache[key].size);
+		if (send_image_chunks(dev, key, key_cache[key].data, (int)key_cache[key].size) < 0)
+			fprintf(stderr, "warning: periodic repaint failed for key %d\n", key + 1);
+	}
+}
 
 /* LUA_NOREF if the key has no on_press() handler registered. */
 static int button_refs[BUTTON_COUNT];
@@ -151,6 +213,8 @@ upload_image(hid_device *d, int key, const char *path, const unsigned char *tint
 	fprintf(stderr, "uploading image %s to key %d\n", path, key + 1);
 
 	rc = send_image_chunks(d, key, blob.data, (int)blob.size);
+	if (rc == 0)
+		cache_key_image(key, blob.data, blob.size);
 	free(blob.data);
 
 	return rc;
@@ -177,6 +241,8 @@ upload_blank(hid_device *d, int key)
 	fprintf(stderr, "uploading blank image to key %d (%zu bytes)\n", key + 1, blob.size);
 
 	rc = send_image_chunks(d, key, blob.data, (int)blob.size);
+	if (rc == 0)
+		cache_key_image(key, blob.data, blob.size);
 	free(blob.data);
 	return rc;
 }
@@ -385,6 +451,8 @@ l_color(lua_State *lua)
 			fprintf(stderr, "uploading color #%02x%02x%02x to key %d\n", r, g, b, key + 1);
 			if (send_image_chunks(dev, key, blob.data, (int)blob.size) < 0)
 				fprintf(stderr, "warning: color upload failed for key %d\n", key + 1);
+			else
+				cache_key_image(key, blob.data, blob.size);
 			free(blob.data);
 		}
 	}
@@ -623,11 +691,8 @@ next_timeout_ms(void)
 	double now, earliest, remaining_ms;
 	int i;
 
-	if (num_timers == 0)
-		return -1;
-
-	earliest = timers[0].next_fire;
-	for (i = 1; i < num_timers; i++) {
+	earliest = next_full_repaint;
+	for (i = 0; i < num_timers; i++) {
 		if (timers[i].next_fire < earliest)
 			earliest = timers[i].next_fire;
 	}
@@ -653,16 +718,23 @@ run_timers(void)
 	int i;
 	double now = now_seconds();
 
-	for (i = 0; i < num_timers; i++) {
-		if (now < timers[i].next_fire)
-			continue;
+	if (L) {
+		for (i = 0; i < num_timers; i++) {
+			if (now < timers[i].next_fire)
+				continue;
 
-		lua_rawgeti(L, LUA_REGISTRYINDEX, timers[i].func_ref);
-		if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
-			fprintf(stderr, "prisma.every() handler error: %s\n", lua_tostring(L, -1));
-			lua_pop(L, 1);
+			lua_rawgeti(L, LUA_REGISTRYINDEX, timers[i].func_ref);
+			if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+				fprintf(stderr, "prisma.every() handler error: %s\n", lua_tostring(L, -1));
+				lua_pop(L, 1);
+			}
+			timers[i].next_fire = now_seconds() + timers[i].interval;
 		}
-		timers[i].next_fire = now_seconds() + timers[i].interval;
+	}
+
+	if (now >= next_full_repaint) {
+		repaint_all_keys();
+		next_full_repaint = now_seconds() + FULL_REPAINT_INTERVAL_SEC;
 	}
 }
 
@@ -882,6 +954,8 @@ main(int argc, char *argv[])
 		return 0;
 	}
 
+	next_full_repaint = now_seconds() + FULL_REPAINT_INTERVAL_SEC;
+
 	printf("listening for button events...\n");
 	fflush(stdout);
 
@@ -891,12 +965,11 @@ main(int argc, char *argv[])
 	 * regardless of whether we're actively reading. */
 	for (;;) {
 		ButtonReport state;
-		int poll_ms = L ? next_timeout_ms() : 1000;
+		int poll_ms = next_timeout_ms();
 
 		r = hid_read_timeout(dev, (unsigned char *)&state, sizeof(state), poll_ms);
 		if (r == 0) {
-			if (L)
-				run_timers();
+			run_timers();
 			continue; /* timeout, nothing new */
 		}
 		if (r < 0) {
@@ -922,8 +995,7 @@ main(int argc, char *argv[])
 		}
 
 		print_buttons(&state);
-		if (L)
-			run_timers();
+		run_timers();
 	}
 
 	if (L)
