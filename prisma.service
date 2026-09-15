@@ -1,7 +1,8 @@
 [Unit]
 Description=Prisma - Elgato Stream Deck Controller
 Documentation=man:prisma(1)
-After=udev.service
+BindsTo=dev-streamdeck.device
+After=dev-streamdeck.device
 
 [Service]
 Type=simple
@@ -14,5 +15,6 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=prisma
 
-[Install]
-WantedBy=default.target
+# No [Install]: the udev rule's SYSTEMD_USER_WANTS starts this unit when
+# the Stream Deck appears, so enabling it would only make it fail at
+# login whenever the device is unplugged.

@@ -92,14 +92,17 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger
 
 systemctl --user daemon-reload
-systemctl --user enable --now prisma.service
 ```
 
-If you already had `prisma.service` running from a previous install,
-use `restart` instead of `enable --now`:
+`prisma.service` is not enabled and has no `[Install]` section. The udev
+rule starts it with `SYSTEMD_USER_WANTS=` when the Stream Deck appears,
+and `BindsTo=dev-streamdeck.device` stops it when the device goes away,
+so plugging the device in is what runs it. `udevadm trigger` above does
+that for a device already plugged in. If you enabled the unit under an
+earlier version, disable it:
+
 ```bash
-systemctl --user daemon-reload
-systemctl --user restart prisma.service
+systemctl --user disable prisma.service
 ```
 
 `udevadm control --reload-rules` picks up the new rule file without a

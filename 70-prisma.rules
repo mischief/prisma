@@ -1,3 +1,10 @@
 # Elgato Stream Deck MK.2
 SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0fd9", TAG+="uaccess"
+
+# TAG+="systemd" exposes the hidraw node as dev-streamdeck.device, which
+# prisma.service is bound to. SYSTEMD_USER_WANTS starts the service in
+# every user manager instance when the device appears.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0fd9", ATTRS{idProduct}=="0080", \
+    TAG+="systemd", SYMLINK+="streamdeck", \
+    ENV{SYSTEMD_USER_WANTS}+="prisma.service"

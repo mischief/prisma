@@ -773,10 +773,28 @@ usage(char *argv0)
 	exit(1);
 }
 
+/*
+ * True if a Stream Deck MK.2 is still enumerable. Separates an unplug
+ * (normal: exit 0, udev starts us again) from a real I/O error (exit
+ * nonzero, Restart=on-failure reopens the device).
+ */
+static int
+device_present(void)
+{
+	struct hid_device_info *devs;
+
+	devs = hid_enumerate(ELGATO_VENDOR_ID, ELGATO_MK2_PRODUCT_ID);
+	if (!devs)
+		return 0;
+	hid_free_enumeration(devs);
+	return 1;
+}
+
 int
 main(int argc, char *argv[])
 {
 	int r = 0;
+	int status;
 	int opt;
 	const char *config_path = NULL;
 
@@ -959,6 +977,9 @@ main(int argc, char *argv[])
 	printf("listening for button events...\n");
 	fflush(stdout);
 
+	/* 0 unless the read loop stops on a real error; see device_present(). */
+	status = 0;
+
 	/* hidraw's hid_read_timeout() is a plain poll()+read() on the
 	 * /dev/hidrawN character device fd -- no background thread, since
 	 * the kernel itself queues incoming HID reports internally
@@ -974,6 +995,7 @@ main(int argc, char *argv[])
 		}
 		if (r < 0) {
 			fprintf(stderr, "hid_read_timeout failed: %ls\n", hid_error(dev));
+			status = device_present();
 			break;
 		}
 
@@ -1002,5 +1024,5 @@ main(int argc, char *argv[])
 		lua_close(L);
 	hid_close(dev);
 	hid_exit();
-	return 0;
+	return status;
 }
