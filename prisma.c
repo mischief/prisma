@@ -94,6 +94,21 @@ cache_key_image(int key, const unsigned char *data, size_t size)
 }
 
 /*
+ * True if a key already shows exactly these bytes. The periodic repaint
+ * deliberately resends everything, so this only suppresses uploads that
+ * would rewrite a key with what is already on it.
+ */
+static int
+key_image_unchanged(int key, const unsigned char *data, size_t size)
+{
+	if (key < 0 || key >= BUTTON_COUNT || !key_cache[key].data)
+		return 0;
+
+	return key_cache[key].size == size &&
+	       memcmp(key_cache[key].data, data, size) == 0;
+}
+
+/*
  * Re-sends whatever was last successfully painted on every key. Called
  * from the main loop on a timer, independent of Lua's prisma.every() --
  * runs even if the config script never registered any timers of its
@@ -210,6 +225,13 @@ upload_image(hid_device *d, int key, const char *path, const unsigned char *tint
 		return -1;
 	}
 
+	if (key_image_unchanged(key, blob.data, blob.size)) {
+		if (debug)
+			fprintf(stderr, "key %d already shows %s, skipping\n", key + 1, path);
+		free(blob.data);
+		return 0;
+	}
+
 	fprintf(stderr, "uploading image %s to key %d\n", path, key + 1);
 
 	rc = send_image_chunks(d, key, blob.data, (int)blob.size);
@@ -236,6 +258,13 @@ upload_blank(hid_device *d, int key)
 	if (!blob.data) {
 		fprintf(stderr, "Failed to generate blank image for key %d\n", key + 1);
 		return -1;
+	}
+
+	if (key_image_unchanged(key, blob.data, blob.size)) {
+		if (debug)
+			fprintf(stderr, "key %d already blank, skipping\n", key + 1);
+		free(blob.data);
+		return 0;
 	}
 
 	fprintf(stderr, "uploading blank image to key %d (%zu bytes)\n", key + 1, blob.size);
